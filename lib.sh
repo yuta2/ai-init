@@ -10,8 +10,29 @@ set -euo pipefail
 _scan_markers() {
   awk -v b="$2" -v e="$3" '
     function norm(s) { sub(/\r$/, "", s); return s }
-    { line = norm($0) }
-    line ~ /^```/ { fence = !fence }
+    # CommonMark fences: ``` or ~~~, up to three spaces of indent, and a closing
+    # fence must use the same character and be at least as long as the opener.
+    # Tracking the character and length is what keeps ~~~, indented fences, and
+    # a ``` nested inside a ```` block from being mis-detected.
+    function fence_run(s,   c, n) {
+      if (s !~ /^ {0,3}(`{3,}|~{3,})/) return ""
+      sub(/^ {0,3}/, "", s)
+      c = substr(s, 1, 1)
+      n = 0
+      while (substr(s, n + 1, 1) == c) n++
+      return c n
+    }
+    { line = norm($0); run = fence_run(line) }
+    run != "" {
+      if (!fence) {
+        fence = 1
+        fchar = substr(run, 1, 1)
+        flen = substr(run, 2) + 0
+      } else if (substr(run, 1, 1) == fchar && substr(run, 2) + 0 >= flen) {
+        fence = 0
+      }
+      next
+    }
     line == b { if (fence) fenced++; else bc++ }
     line == e { if (fence) fenced++; else ec++ }
     END { printf "%d %d %d\n", bc, ec, fenced }

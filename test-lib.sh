@@ -202,5 +202,67 @@ check "state: missing file is absent" "$(block_state_in nope.md "$B" "$E")" "abs
 teardown
 
 echo
+# --- fence variants: tilde, indented, nested, mismatched close ---------------
+setup
+fence_case() {
+  printf "$2" "$B" "$E" > target.md
+  cp target.md before.md
+  merge_managed_block target.md "$B" "$E" block.md >/dev/null 2>&1
+  check "fence variant ($1): refused" "$?" "1"
+  check_file "fence variant ($1): file untouched" target.md before.md
+}
+fence_case "tilde"    '# M\n\n~~~\n%s\nSECRET\n%s\n~~~\n'
+fence_case "indented" '# M\n\n  ```\n%s\nSECRET\n%s\n  ```\n'
+fence_case "nested"   '# M\n\n````\n```\n%s\nSECRET\n%s\n```\n````\n'
+fence_case "mismatched close" '# M\n\n```\n%s\nSECRET\n%s\n~~~\n'
+teardown
+
+# --- an ordinary code block must not be mistaken for a fenced marker ---------
+setup
+printf '# M\n\n```bash\necho hi\n```\n\n%s\nold\n%s\n' "$B" "$E" > target.md
+check "ordinary code block: state ok" "$(block_state_in target.md "$B" "$E")" "ok"
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+check "ordinary code block: exit 0" "$?" "0"
+check "ordinary code block: content kept" "$(grep -c '^echo hi$' target.md)" "1"
+check "ordinary code block: fences kept" "$(grep -c '^```$' target.md)" "1"
+check "ordinary code block: single block" "$(grep -cF "$B" target.md)" "1"
+teardown
+
+echo
+# --- a wrong-character fence line before the markers must not close the fence -
+# The markers must still count as fenced, otherwise merging deletes SECRET.
+setup
+printf '# M\n\n```\ncode\n~~~\n%s\nSECRET\n%s\n```\n' "$B" "$E" > target.md
+cp target.md before.md
+check "fence char: markers still fenced" "$(block_state_in target.md "$B" "$E")" "malformed"
+merge_managed_block target.md "$B" "$E" block.md >/dev/null 2>&1
+check "fence char: refused" "$?" "1"
+check_file "fence char: file untouched" target.md before.md
+teardown
+
+# --- repeated merges must be byte-identical, not grow blank lines ------------
+setup
+printf '# My rules\n\nkeep this line\n' > target.md
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+cp target.md twice.md
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+check_file "byte idempotent: 3rd merge equals 2nd" target.md twice.md
+check "byte idempotent: exactly one blank run before block" \
+  "$(awk -v b="$B" 'NR>1 && $0==b { print blanks } /^[[:space:]]*$/ { blanks++; next } { blanks=0 }' target.md)" "2"
+teardown
+
+# --- trailing blank lines in user content are normalized away ---------------
+# However many blank lines the user file ends with, the merged result must be
+# the same; otherwise every re-run grows the gap before the block.
+setup
+printf '# My rules\n\nkeep this line\n' > none.md
+printf '# My rules\n\nkeep this line\n\n\n\n\n' > many.md
+merge_managed_block none.md "$B" "$E" block.md >/dev/null
+merge_managed_block many.md "$B" "$E" block.md >/dev/null
+check_file "trailing blanks: normalized away" many.md none.md
+teardown
+
+echo
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]
