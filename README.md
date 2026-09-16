@@ -67,15 +67,32 @@ ai-init --help
 都會**跳過該 adapter 繼續處理其他的**，最後列出被跳過的項目並以非零 exit code 結束。
 `install-all.sh` 即使有 adapter 失敗，仍會裝好共用憲章與 `ai-init` 指令。
 
-拒絕修改檔案的情況：
+拒絕修改檔案的情況（都不會動到檔案，並回報非零 exit code）：
 
 - markers 數量不對稱，或出現多組重複 block
-- markers 出現在 fenced code block 裡（刪掉 block 會連帶吃掉使用者內容）
-- 目標檔案不可寫（唯讀檔、唯讀檔案系統）
+- 目標檔案或其所在目錄不可寫
+- 寫入中途失敗（磁碟滿、檔案大小限制）
+- adapter block 檔案不存在或是空的
 
-這三種都不會動到檔案，並回報非零 exit code。`ai-init --status` 會把壞掉的 block 標成 `MALFORMED`。
+`ai-init --status` 會把壞掉的 block 標成 `MALFORMED`。
 
-行尾是 CRLF 的檔案一樣能正確比對 marker，不會重複 merge 出第二個 block。
+## marker 比對規則
+
+- 比對是 **byte 精確**的（awk 一律跑在 `LC_ALL=C`）。在 UTF-8 locale 下 awk 的字串比較是
+  collation 比對，前面加個 BOM 或全形空白的行會被當成 marker，結果還會隨 locale 改變。
+- 忽略行尾的 CR，所以 CRLF 檔案一樣認得自己的 block，不會重複 merge 出第二個。
+- 忽略行首空白，所以被縮排過的 marker 仍對得上，不會變成看不見的孤兒 block。
+- **fenced code block 裡的 marker 一律忽略**。文件裡示範 managed block 長什麼樣子的
+  程式碼區塊不會被刪掉，該檔案也照樣能正常 merge 真正的 block。
+  支援 ``` 與 ~~~、縮排、巢狀，關閉的 fence 必須同字元、不短於開啟的、且不帶 info string。
+
+## 寫入方式
+
+檔案不會被就地覆寫。新內容先組在同目錄的暫存檔，再用 rename 換上去，所以寫到一半失敗
+（磁碟滿、`RLIMIT_FSIZE`）不會把設定檔截成空的。既有檔案的權限會保留，symlink 也維持是
+symlink（寫入它指向的檔案）。
+
+代價是 merge 需要目標檔**所在目錄**可寫。目錄唯讀時會明確失敗，不會退回就地覆寫。
 
 ## 測試
 
@@ -84,4 +101,6 @@ bash test-lib.sh
 ```
 
 `lib.sh` 會寫進 `~/.claude/CLAUDE.md`、`~/.codex/AGENTS.md` 等全域設定檔，
-所以 merge / remove / 版本讀取的行為都有對應檢查。
+所以 merge / remove / 版本讀取的行為都有對應檢查（97 項）。
+
+測試本身用「種突變到 `lib.sh`，看有沒有測試變紅」的方式驗過。
