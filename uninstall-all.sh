@@ -4,26 +4,36 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/lib.sh"
 
-CODEX_HOME_RESOLVED="${CODEX_HOME:-$HOME/.codex}"
-CLAUDE_HOME_RESOLVED="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-PI_HOME_RESOLVED="${PI_AGENT_HOME:-$HOME/.pi/agent}"
-DSH_HOME_RESOLVED="${DSH_HOME:-$HOME/.dsh}"
+# home|file|marker
+TARGETS="${CODEX_HOME:-$HOME/.codex}|AGENTS.md|CODEX
+${CLAUDE_CONFIG_DIR:-$HOME/.claude}|CLAUDE.md|CLAUDE
+${PI_AGENT_HOME:-$HOME/.pi/agent}|AGENTS.md|PI
+${DSH_HOME:-$HOME/.dsh}|AGENTS.md|DSH"
 
-remove_managed_block "$CODEX_HOME_RESOLVED/AGENTS.md" \
-  "<!-- BEGIN AI-ENGINEERING-RUNTIME ADAPTER:CODEX -->" \
-  "<!-- END AI-ENGINEERING-RUNTIME ADAPTER:CODEX -->"
+FAILURES=""
 
-remove_managed_block "$CLAUDE_HOME_RESOLVED/CLAUDE.md" \
-  "<!-- BEGIN AI-ENGINEERING-RUNTIME ADAPTER:CLAUDE -->" \
-  "<!-- END AI-ENGINEERING-RUNTIME ADAPTER:CLAUDE -->"
+while IFS='|' read -r home file marker; do
+  if [ -z "$home" ]; then
+    continue
+  fi
+  target="$home/$file"
+  if ! remove_managed_block "$target" \
+    "<!-- BEGIN AI-ENGINEERING-RUNTIME ADAPTER:$marker -->" \
+    "<!-- END AI-ENGINEERING-RUNTIME ADAPTER:$marker -->"; then
+    FAILURES="$FAILURES$marker ($target)"$'\n'
+  fi
+done <<< "$TARGETS"
 
-remove_managed_block "$PI_HOME_RESOLVED/AGENTS.md" \
-  "<!-- BEGIN AI-ENGINEERING-RUNTIME ADAPTER:PI -->" \
-  "<!-- END AI-ENGINEERING-RUNTIME ADAPTER:PI -->"
-
-remove_managed_block "$DSH_HOME_RESOLVED/AGENTS.md" \
-  "<!-- BEGIN AI-ENGINEERING-RUNTIME ADAPTER:DSH -->" \
-  "<!-- END AI-ENGINEERING-RUNTIME ADAPTER:DSH -->"
+if [ -n "$FAILURES" ]; then
+  echo
+  echo "ERROR: the following global adapters were left in place:"
+  printf '%s' "$FAILURES" | while IFS= read -r line; do
+    if [ -n "$line" ]; then echo "  $line"; fi
+  done
+  echo
+  echo "Fix the managed block markers in the files above, then re-run."
+  exit 1
+fi
 
 echo "Removed only AI Engineering Runtime managed adapter blocks."
 echo "Existing user instructions and shared rule backups were preserved."

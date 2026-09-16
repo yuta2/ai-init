@@ -6,7 +6,9 @@ source "$ROOT/lib.sh"
 
 SHARED_HOME="$HOME/.ai-dev-rules"
 RUNTIME_HOME="$SHARED_HOME/runtime"
-STAMP="$(date +%Y%m%d-%H%M%S)"
+# PID keeps two runs inside the same second from overwriting each other's backup.
+STAMP="$(date +%Y%m%d-%H%M%S)-$$"
+FAILURES=""
 
 mkdir -p "$SHARED_HOME" "$RUNTIME_HOME"
 
@@ -14,7 +16,7 @@ if [ "$(find "$SHARED_HOME" -maxdepth 1 -type f 2>/dev/null | head -n 1)" ]; the
   BACKUP="$SHARED_HOME/backups/shared-$STAMP"
   mkdir -p "$BACKUP"
   for f in CORE.md WORKFLOW.md UX.md RELIABILITY.md REVIEW.md; do
-    [ -f "$SHARED_HOME/$f" ] && cp "$SHARED_HOME/$f" "$BACKUP/$f"
+    if [ -f "$SHARED_HOME/$f" ]; then cp "$SHARED_HOME/$f" "$BACKUP/$f"; fi
   done
   echo "Backed up existing shared rules to: $BACKUP"
 fi
@@ -43,11 +45,14 @@ install_adapter() {
     echo "Backed up $target to: $backup_dir/$target_file"
   fi
 
-  merge_managed_block "$target" \
+  if merge_managed_block "$target" \
     "<!-- BEGIN AI-ENGINEERING-RUNTIME ADAPTER:$marker -->" \
     "<!-- END AI-ENGINEERING-RUNTIME ADAPTER:$marker -->" \
-    "$ROOT/adapters/$name/GLOBAL_BLOCK.md"
-  echo "Merged adapter into: $target"
+    "$ROOT/adapters/$name/GLOBAL_BLOCK.md"; then
+    echo "Merged adapter into: $target"
+  else
+    FAILURES="$FAILURES$marker ($target)"$'\n'
+  fi
 }
 
 install_adapter "codex" "${CODEX_HOME:-$HOME/.codex}" "AGENTS.md" "CODEX"
@@ -77,6 +82,18 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   echo "NOTE: $BIN_DIR is not currently in PATH."
   echo "Add this once to your shell configuration:"
   echo "  export PATH=\"$BIN_DIR:\$PATH\""
+fi
+
+if [ -n "$FAILURES" ]; then
+  echo
+  echo "ERROR: the following global adapters were skipped:"
+  printf '%s' "$FAILURES" | while IFS= read -r line; do
+    if [ -n "$line" ]; then echo "  $line"; fi
+  done
+  echo
+  echo "Fix the managed block markers in the files above, then re-run install-all.sh."
+  echo "The shared rules and the ai-init command were installed, so the rest still works."
+  exit 1
 fi
 
 echo

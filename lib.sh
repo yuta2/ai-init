@@ -1,6 +1,81 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Marker comparison ignores a trailing CR throughout. A file that picks up CRLF
+# endings (a Windows editor, git core.autocrlf) would otherwise stop matching its
+# own markers, so every merge would append a second block and remove could never
+# take either one out.
+
+# Print "<begin_count> <end_count> <markers_inside_a_code_fence>".
+_scan_markers() {
+  awk -v b="$2" -v e="$3" '
+    function norm(s) { sub(/\r$/, "", s); return s }
+    { line = norm($0) }
+    line ~ /^```/ { fence = !fence }
+    line == b { if (fence) fenced++; else bc++ }
+    line == e { if (fence) fenced++; else ec++ }
+    END { printf "%d %d %d\n", bc, ec, fenced }
+  ' "$1"
+}
+
+# Print "absent", "ok", or "malformed" for a managed block in a file.
+block_state_in() {
+  target="$1"
+  begin_marker="$2"
+  end_marker="$3"
+
+  if [ ! -f "$target" ]; then
+    echo "absent"
+    return 0
+  fi
+
+  counts="$(_scan_markers "$target" "$begin_marker" "$end_marker")"
+  bc="${counts%% *}"
+  rest="${counts#* }"
+  ec="${rest%% *}"
+  fenced="${rest##* }"
+
+  if [ "$fenced" -gt 0 ] || [ "$bc" -ne "$ec" ] || [ "$bc" -gt 1 ]; then
+    echo "malformed"
+  elif [ "$bc" -eq 0 ]; then
+    echo "absent"
+  else
+    echo "ok"
+  fi
+}
+
+_explain_malformed() {
+  target="$1"
+  counts="$(_scan_markers "$target" "$2" "$3")"
+  bc="${counts%% *}"
+  rest="${counts#* }"
+  ec="${rest%% *}"
+  fenced="${rest##* }"
+
+  if [ "$fenced" -gt 0 ]; then
+    echo "ERROR: Managed block markers appear inside a fenced code block in $target"
+    echo "Removing the block would delete the surrounding content, so nothing was changed."
+  elif [ "$bc" -ne "$ec" ]; then
+    echo "ERROR: Managed block markers are unbalanced in $target ($bc begin, $ec end)"
+    echo "No changes were made to this file."
+  else
+    echo "ERROR: Multiple managed blocks were found in $target"
+    echo "Resolve duplicates manually before re-running."
+  fi
+}
+
+# Drop trailing blank lines from stdin.
+_trim_trailing_blanks() {
+  awk '
+    { lines[NR] = $0 }
+    END {
+      last = NR
+      while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--
+      for (i = 1; i <= last; i++) print lines[i]
+    }
+  '
+}
+
 merge_managed_block() {
   target="$1"
   begin_marker="$2"
@@ -10,56 +85,51 @@ merge_managed_block() {
   mkdir -p "$(dirname "$target")"
 
   if [ ! -f "$target" ]; then
-    cp "$block_file" "$target"
+    if ! cp "$block_file" "$target"; then
+      echo "ERROR: Could not create $target"
+      return 1
+    fi
     return 0
   fi
 
-  begin_count="$(grep -Fxc "$begin_marker" "$target" 2>/dev/null || true)"
-  end_count="$(grep -Fxc "$end_marker" "$target" 2>/dev/null || true)"
-
-  if [ "$begin_count" -ne "$end_count" ]; then
-    echo "ERROR: Managed block markers are malformed in $target"
-    echo "No changes were made to this file."
+  state="$(block_state_in "$target" "$begin_marker" "$end_marker")"
+  if [ "$state" = "malformed" ]; then
+    _explain_malformed "$target" "$begin_marker" "$end_marker"
     return 1
   fi
 
-  if [ "$begin_count" -gt 1 ]; then
-    echo "ERROR: Multiple managed blocks were found in $target"
-    echo "Resolve duplicates manually before re-running."
-    return 1
-  fi
+  tmp="$(mktemp)" || return 1
+  out="$(mktemp)" || { rm -f "$tmp"; return 1; }
 
-  tmp="$(mktemp)"
-
-  if [ "$begin_count" -eq 1 ]; then
+  if [ "$state" = "ok" ]; then
     awk -v b="$begin_marker" -v e="$end_marker" '
-      $0 == b { skip=1; next }
-      $0 == e { skip=0; next }
+      function norm(s) { sub(/\r$/, "", s); return s }
+      { line = norm($0) }
+      line == b { skip = 1; next }
+      line == e { skip = 0; next }
       !skip { print }
-    ' "$target" > "$tmp"
+    ' "$target" | _trim_trailing_blanks > "$tmp"
   else
-    cp "$target" "$tmp"
+    _trim_trailing_blanks < "$target" > "$tmp"
   fi
 
-  # Keep user content intact; only normalize trailing blank lines.
-  awk '
-    { lines[NR]=$0 }
-    END {
-      last=NR
-      while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--
-      for (i=1; i<=last; i++) print lines[i]
-    }
-  ' "$tmp" > "${tmp}.trim"
-
-  if [ -s "${tmp}.trim" ]; then
-    cat "${tmp}.trim" > "$target"
-    printf "\n\n" >> "$target"
+  # Assemble the whole result first, then write once. Writing directly to the
+  # target would truncate it before discovering the file is not writable.
+  if [ -s "$tmp" ]; then
+    { cat "$tmp"; printf '\n\n'; cat "$block_file"; } > "$out"
   else
-    : > "$target"
+    cat "$block_file" > "$out"
   fi
 
-  cat "$block_file" >> "$target"
-  rm -f "$tmp" "${tmp}.trim"
+  if ! cat "$out" > "$target" 2>/dev/null; then
+    echo "ERROR: Could not write $target (permission denied or read-only filesystem)"
+    echo "The file was left unchanged."
+    rm -f "$tmp" "$out"
+    return 1
+  fi
+
+  rm -f "$tmp" "$out"
+  return 0
 }
 
 remove_managed_block() {
@@ -69,43 +139,44 @@ remove_managed_block() {
 
   [ -f "$target" ] || return 0
 
-  begin_count="$(grep -Fxc "$begin_marker" "$target" 2>/dev/null || true)"
-  end_count="$(grep -Fxc "$end_marker" "$target" 2>/dev/null || true)"
+  state="$(block_state_in "$target" "$begin_marker" "$end_marker")"
+  case "$state" in
+    absent)
+      return 0
+      ;;
+    malformed)
+      _explain_malformed "$target" "$begin_marker" "$end_marker"
+      echo "File left unchanged."
+      return 1
+      ;;
+  esac
 
-  if [ "$begin_count" -eq 0 ] && [ "$end_count" -eq 0 ]; then
-    return 0
+  tmp="$(mktemp)" || return 1
+  out="$(mktemp)" || { rm -f "$tmp"; return 1; }
+
+  awk -v b="$begin_marker" -v e="$end_marker" '
+    function norm(s) { sub(/\r$/, "", s); return s }
+    { line = norm($0) }
+    line == b { skip = 1; next }
+    line == e { skip = 0; next }
+    !skip { print }
+  ' "$target" | _trim_trailing_blanks > "$tmp"
+
+  if [ -s "$tmp" ]; then
+    { cat "$tmp"; printf '\n'; } > "$out"
+  else
+    : > "$out"
   fi
 
-  if [ "$begin_count" -ne 1 ] || [ "$end_count" -ne 1 ]; then
-    echo "ERROR: Managed block markers are malformed in $target"
-    echo "File left unchanged."
+  if ! cat "$out" > "$target" 2>/dev/null; then
+    echo "ERROR: Could not write $target (permission denied or read-only filesystem)"
+    echo "The file was left unchanged."
+    rm -f "$tmp" "$out"
     return 1
   fi
 
-  tmp="$(mktemp)"
-  awk -v b="$begin_marker" -v e="$end_marker" '
-    $0 == b { skip=1; next }
-    $0 == e { skip=0; next }
-    !skip { print }
-  ' "$target" > "$tmp"
-
-  awk '
-    { lines[NR]=$0 }
-    END {
-      last=NR
-      while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--
-      for (i=1; i<=last; i++) print lines[i]
-    }
-  ' "$tmp" > "${tmp}.trim"
-
-  if [ -s "${tmp}.trim" ]; then
-    cat "${tmp}.trim" > "$target"
-    printf "\n" >> "$target"
-  else
-    : > "$target"
-  fi
-
-  rm -f "$tmp" "${tmp}.trim"
+  rm -f "$tmp" "$out"
+  return 0
 }
 
 # Print the ai-runtime-version declared inside a managed block, or nothing when
@@ -118,12 +189,13 @@ block_version_in() {
   [ -f "$target" ] || return 0
 
   awk -v b="$begin_marker" -v e="$end_marker" '
-    $0 == b { inblock = 1; next }
-    $0 == e { exit }
-    inblock && /^<!-- ai-runtime-version: [0-9]+ -->$/ {
-      v = $0
-      gsub(/[^0-9]/, "", v)
-      print v
+    function norm(s) { sub(/\r$/, "", s); return s }
+    { line = norm($0) }
+    line == b { inblock = 1; next }
+    line == e { exit }
+    inblock && line ~ /^<!-- ai-runtime-version: [0-9]+ -->$/ {
+      gsub(/[^0-9]/, "", line)
+      print line
       exit
     }
   ' "$target"

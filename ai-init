@@ -129,8 +129,15 @@ status_one() {
   marker="$3"
   target="$PROJECT_ROOT/$file"
 
-  if [ ! -f "$target" ] || ! grep -Fqx "$(begin_marker "$marker")" "$target"; then
+  state="$(block_state_in "$target" "$(begin_marker "$marker")" "$(end_marker "$marker")")"
+
+  if [ "$state" = "absent" ]; then
     printf "  %-7s %-11s not installed\n" "$marker" "$file"
+    return 0
+  fi
+
+  if [ "$state" = "malformed" ]; then
+    printf "  %-7s %-11s MALFORMED (fix the markers by hand, then re-run ai-init)\n" "$marker" "$file"
     return 0
   fi
 

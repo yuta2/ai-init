@@ -63,8 +63,19 @@ ai-init --help
 
 ## 錯誤處理
 
-某個 adapter 的 managed block markers 壞掉時，`ai-init` 會**跳過該 adapter 繼續處理其他的**，
-最後列出所有被跳過的項目並以非零 exit code 結束。不會因為一個檔案有問題就讓整個專案只初始化一半。
+某個 adapter 的 managed block markers 壞掉時，`ai-init`、`install-all.sh`、`uninstall-all.sh`
+都會**跳過該 adapter 繼續處理其他的**，最後列出被跳過的項目並以非零 exit code 結束。
+`install-all.sh` 即使有 adapter 失敗，仍會裝好共用憲章與 `ai-init` 指令。
+
+拒絕修改檔案的情況：
+
+- markers 數量不對稱，或出現多組重複 block
+- markers 出現在 fenced code block 裡（刪掉 block 會連帶吃掉使用者內容）
+- 目標檔案不可寫（唯讀檔、唯讀檔案系統）
+
+這三種都不會動到檔案，並回報非零 exit code。`ai-init --status` 會把壞掉的 block 標成 `MALFORMED`。
+
+行尾是 CRLF 的檔案一樣能正確比對 marker，不會重複 merge 出第二個 block。
 
 ## 測試
 
