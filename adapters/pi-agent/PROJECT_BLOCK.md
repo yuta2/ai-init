@@ -1,4 +1,5 @@
 <!-- BEGIN AI-ENGINEERING-RUNTIME PROJECT:PI -->
+<!-- ai-runtime-version: 1 -->
 # Shared Project AI Context — Pi Agent
 
 Before substantial implementation or architectural changes, read `.ai/PROJECT.md`.

@@ -1,4 +1,5 @@
 <!-- BEGIN AI-ENGINEERING-RUNTIME PROJECT:CLAUDE -->
+<!-- ai-runtime-version: 1 -->
 # Shared Project AI Context — Claude Code
 
 Use this repository's durable project context:

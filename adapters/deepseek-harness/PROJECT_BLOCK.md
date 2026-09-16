@@ -1,4 +1,5 @@
 <!-- BEGIN AI-ENGINEERING-RUNTIME PROJECT:DSH -->
+<!-- ai-runtime-version: 1 -->
 # Shared Project AI Context — DeepSeek Harness
 
 Before substantial implementation or architectural changes, read `.ai/PROJECT.md`.

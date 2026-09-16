@@ -107,3 +107,24 @@ remove_managed_block() {
 
   rm -f "$tmp" "${tmp}.trim"
 }
+
+# Print the ai-runtime-version declared inside a managed block, or nothing when
+# the block or the version line is absent.
+block_version_in() {
+  target="$1"
+  begin_marker="$2"
+  end_marker="$3"
+
+  [ -f "$target" ] || return 0
+
+  awk -v b="$begin_marker" -v e="$end_marker" '
+    $0 == b { inblock = 1; next }
+    $0 == e { exit }
+    inblock && /^<!-- ai-runtime-version: [0-9]+ -->$/ {
+      v = $0
+      gsub(/[^0-9]/, "", v)
+      print v
+      exit
+    }
+  ' "$target"
+}

@@ -1,4 +1,5 @@
 <!-- BEGIN AI-ENGINEERING-RUNTIME PROJECT:CODEX -->
+<!-- ai-runtime-version: 1 -->
 # Shared Project AI Context — Codex
 
 For this repository, read `.ai/PROJECT.md` before substantial implementation or architectural changes.

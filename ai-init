@@ -4,6 +4,12 @@ set -euo pipefail
 SHARED_HOME="$HOME/.ai-dev-rules"
 RUNTIME_HOME="$SHARED_HOME/runtime"
 
+# name|file|marker — the single source of truth for which adapters exist.
+ADAPTERS="codex|AGENTS.md|CODEX
+pi-agent|AGENTS.md|PI
+deepseek-harness|AGENTS.md|DSH
+claude-code|CLAUDE.md|CLAUDE"
+
 usage() {
   cat <<'HELP'
 ai-init - initialize shared AI engineering context for the current project
@@ -18,17 +24,31 @@ Behavior:
   - Uses the Git repository root when inside a Git repo
   - Otherwise uses the current directory
   - Never overwrites existing AGENTS.md or CLAUDE.md
+  - Backs up each touched file once per run to .ai/backups/<timestamp>/
   - Creates .ai/PROJECT.md only when it does not already exist
   - Re-running updates only managed blocks
+  - Keeps going when one adapter fails, then reports every failure
 HELP
 }
 
-if [ ! -d "$RUNTIME_HOME" ]; then
-  echo "ERROR: AI Engineering Runtime assets not found at:"
-  echo "  $RUNTIME_HOME"
-  echo "Run install-all.sh first."
-  exit 1
-fi
+# --help needs nothing installed, so answer it before any other check.
+case "${1:-}" in
+  --help|-h)
+    usage
+    exit 0
+    ;;
+esac
+
+require_runtime() {
+  if [ ! -d "$RUNTIME_HOME" ]; then
+    echo "ERROR: AI Engineering Runtime assets not found at:"
+    echo "  $RUNTIME_HOME"
+    echo "Run install-all.sh first."
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  source "$RUNTIME_HOME/lib.sh"
+}
 
 if git rev-parse --show-toplevel >/dev/null 2>&1; then
   PROJECT_ROOT="$(git rev-parse --show-toplevel)"
@@ -38,7 +58,36 @@ else
   echo "  $PROJECT_ROOT"
 fi
 
-source "$RUNTIME_HOME/lib.sh"
+# PID keeps two runs inside the same second from sharing (and silently skipping)
+# a backup directory.
+RUN_STAMP="$(date +%Y%m%d-%H%M%S)-$$"
+BACKUP_DIR="$PROJECT_ROOT/.ai/backups/$RUN_STAMP"
+FAILURES=""
+
+begin_marker() { printf '<!-- BEGIN AI-ENGINEERING-RUNTIME PROJECT:%s -->' "$1"; }
+end_marker() { printf '<!-- END AI-ENGINEERING-RUNTIME PROJECT:%s -->' "$1"; }
+
+# Three adapters share AGENTS.md, so back it up once per run and only before the
+# first merge touches it. A per-merge backup would capture a half-merged file.
+backup_once() {
+  target="$1"
+  file="$2"
+
+  if [ ! -f "$target" ]; then
+    return 0
+  fi
+  if [ -f "$BACKUP_DIR/$file" ]; then
+    return 0
+  fi
+
+  mkdir -p "$BACKUP_DIR"
+  # Keep backups out of the user's repository without editing their .gitignore.
+  if [ ! -f "$PROJECT_ROOT/.ai/backups/.gitignore" ]; then
+    printf '*\n' > "$PROJECT_ROOT/.ai/backups/.gitignore"
+  fi
+  cp "$target" "$BACKUP_DIR/$file"
+  echo "Backed up $file to: .ai/backups/$RUN_STAMP/$file"
+}
 
 merge_one() {
   name="$1"
@@ -47,59 +96,97 @@ merge_one() {
   target="$PROJECT_ROOT/$file"
   block="$RUNTIME_HOME/adapters/$name/PROJECT_BLOCK.md"
 
-  if [ -f "$target" ]; then
-    stamp="$(date +%Y%m%d-%H%M%S)"
-    cp "$target" "$target.ai-runtime-backup-$stamp"
-  fi
+  backup_once "$target" "$file"
 
-  merge_managed_block "$target" \
-    "<!-- BEGIN AI-ENGINEERING-RUNTIME PROJECT:$marker -->" \
-    "<!-- END AI-ENGINEERING-RUNTIME PROJECT:$marker -->" \
-    "$block"
+  if merge_managed_block "$target" \
+    "$(begin_marker "$marker")" \
+    "$(end_marker "$marker")" \
+    "$block"; then
+    echo "Merged $marker into: $file"
+  else
+    FAILURES="$FAILURES$file:$marker"$'\n'
+  fi
 }
 
 remove_one() {
   file="$1"
   marker="$2"
-  remove_managed_block "$PROJECT_ROOT/$file" \
-    "<!-- BEGIN AI-ENGINEERING-RUNTIME PROJECT:$marker -->" \
-    "<!-- END AI-ENGINEERING-RUNTIME PROJECT:$marker -->"
+  target="$PROJECT_ROOT/$file"
+
+  backup_once "$target" "$file"
+
+  if remove_managed_block "$target" \
+    "$(begin_marker "$marker")" \
+    "$(end_marker "$marker")"; then
+    return 0
+  fi
+  FAILURES="$FAILURES$file:$marker"$'\n'
 }
 
 status_one() {
-  file="$1"
-  marker="$2"
+  name="$1"
+  file="$2"
+  marker="$3"
   target="$PROJECT_ROOT/$file"
-  if [ -f "$target" ] && grep -Fq "<!-- BEGIN AI-ENGINEERING-RUNTIME PROJECT:$marker -->" "$target"; then
-    printf "  %-10s installed\n" "$marker"
+
+  if [ ! -f "$target" ] || ! grep -Fqx "$(begin_marker "$marker")" "$target"; then
+    printf "  %-7s %-11s not installed\n" "$marker" "$file"
+    return 0
+  fi
+
+  installed="$(block_version_in "$target" "$(begin_marker "$marker")" "$(end_marker "$marker")")"
+  [ -n "$installed" ] || installed="0"
+
+  available=""
+  if [ -f "$RUNTIME_HOME/adapters/$name/PROJECT_BLOCK.md" ]; then
+    available="$(block_version_in "$RUNTIME_HOME/adapters/$name/PROJECT_BLOCK.md" \
+      "$(begin_marker "$marker")" "$(end_marker "$marker")")"
+  fi
+
+  if [ -z "$available" ]; then
+    printf "  %-7s %-11s installed (v%s)\n" "$marker" "$file" "$installed"
+  elif [ "$installed" = "$available" ]; then
+    printf "  %-7s %-11s installed (v%s)\n" "$marker" "$file" "$installed"
   else
-    printf "  %-10s not installed\n" "$marker"
+    printf "  %-7s %-11s OUTDATED (v%s installed, v%s available — re-run ai-init)\n" \
+      "$marker" "$file" "$installed" "$available"
   fi
 }
 
+report_failures() {
+  if [ -z "$FAILURES" ]; then
+    return 0
+  fi
+  echo
+  echo "ERROR: the following adapters were skipped:"
+  printf '%s' "$FAILURES" | while IFS= read -r line; do
+    if [ -n "$line" ]; then echo "  $line"; fi
+  done
+  echo
+  echo "Fix the managed block markers in the files above, then re-run."
+  exit 1
+}
+
 case "${1:-}" in
-  --help|-h)
-    usage
-    exit 0
-    ;;
   --status)
+    require_runtime
     echo "Project root: $PROJECT_ROOT"
     if [ -f "$PROJECT_ROOT/.ai/PROJECT.md" ]; then
-      echo "PROJECT.md: present"
+      echo "PROJECT.md:   present"
     else
-      echo "PROJECT.md: missing"
+      echo "PROJECT.md:   missing"
     fi
-    status_one "AGENTS.md" "CODEX"
-    status_one "AGENTS.md" "PI"
-    status_one "AGENTS.md" "DSH"
-    status_one "CLAUDE.md" "CLAUDE"
+    while IFS='|' read -r name file marker; do
+      if [ -n "$name" ]; then status_one "$name" "$file" "$marker"; fi
+    done <<< "$ADAPTERS"
     exit 0
     ;;
   --remove)
-    remove_one "AGENTS.md" "CODEX"
-    remove_one "AGENTS.md" "PI"
-    remove_one "AGENTS.md" "DSH"
-    remove_one "CLAUDE.md" "CLAUDE"
+    require_runtime
+    while IFS='|' read -r name file marker; do
+      if [ -n "$name" ]; then remove_one "$file" "$marker"; fi
+    done <<< "$ADAPTERS"
+    report_failures
     echo "Removed managed project adapter blocks. .ai/PROJECT.md was preserved."
     exit 0
     ;;
@@ -112,6 +199,8 @@ case "${1:-}" in
     ;;
 esac
 
+require_runtime
+
 mkdir -p "$PROJECT_ROOT/.ai"
 
 if [ ! -f "$PROJECT_ROOT/.ai/PROJECT.md" ]; then
@@ -121,10 +210,11 @@ else
   echo "Kept existing: $PROJECT_ROOT/.ai/PROJECT.md"
 fi
 
-merge_one "codex" "AGENTS.md" "CODEX"
-merge_one "pi-agent" "AGENTS.md" "PI"
-merge_one "deepseek-harness" "AGENTS.md" "DSH"
-merge_one "claude-code" "CLAUDE.md" "CLAUDE"
+while IFS='|' read -r name file marker; do
+  if [ -n "$name" ]; then merge_one "$name" "$file" "$marker"; fi
+done <<< "$ADAPTERS"
+
+report_failures
 
 echo
 echo "AI project context initialized:"
