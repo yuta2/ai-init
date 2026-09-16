@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SHARED_HOME="$HOME/.ai-dev-rules"
+RUNTIME_HOME="$SHARED_HOME/runtime"
+
+usage() {
+  cat <<'HELP'
+ai-init - initialize shared AI engineering context for the current project
+
+Usage:
+  ai-init              Initialize or update project adapters
+  ai-init --status     Show initialization status
+  ai-init --remove     Remove only managed project adapter blocks
+  ai-init --help       Show this help
+
+Behavior:
+  - Uses the Git repository root when inside a Git repo
+  - Otherwise uses the current directory
+  - Never overwrites existing AGENTS.md or CLAUDE.md
+  - Creates .ai/PROJECT.md only when it does not already exist
+  - Re-running updates only managed blocks
+HELP
+}
+
+if [ ! -d "$RUNTIME_HOME" ]; then
+  echo "ERROR: AI Engineering Runtime assets not found at:"
+  echo "  $RUNTIME_HOME"
+  echo "Run install-all.sh first."
+  exit 1
+fi
+
+if git rev-parse --show-toplevel >/dev/null 2>&1; then
+  PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+else
+  PROJECT_ROOT="$PWD"
+  echo "No Git repository detected; using current directory as project root:"
+  echo "  $PROJECT_ROOT"
+fi
+
+source "$RUNTIME_HOME/lib.sh"
+
+merge_one() {
+  name="$1"
+  file="$2"
+  marker="$3"
+  target="$PROJECT_ROOT/$file"
+  block="$RUNTIME_HOME/adapters/$name/PROJECT_BLOCK.md"
+
+  if [ -f "$target" ]; then
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    cp "$target" "$target.ai-runtime-backup-$stamp"
+  fi
+
+  merge_managed_block "$target" \
+    "<!-- BEGIN AI-ENGINEERING-RUNTIME PROJECT:$marker -->" \
+    "<!-- END AI-ENGINEERING-RUNTIME PROJECT:$marker -->" \
+    "$block"
+}
+
+remove_one() {
+  file="$1"
+  marker="$2"
+  remove_managed_block "$PROJECT_ROOT/$file" \
+    "<!-- BEGIN AI-ENGINEERING-RUNTIME PROJECT:$marker -->" \
+    "<!-- END AI-ENGINEERING-RUNTIME PROJECT:$marker -->"
+}
+
+status_one() {
+  file="$1"
+  marker="$2"
+  target="$PROJECT_ROOT/$file"
+  if [ -f "$target" ] && grep -Fq "<!-- BEGIN AI-ENGINEERING-RUNTIME PROJECT:$marker -->" "$target"; then
+    printf "  %-10s installed\n" "$marker"
+  else
+    printf "  %-10s not installed\n" "$marker"
+  fi
+}
+
+case "${1:-}" in
+  --help|-h)
+    usage
+    exit 0
+    ;;
+  --status)
+    echo "Project root: $PROJECT_ROOT"
+    if [ -f "$PROJECT_ROOT/.ai/PROJECT.md" ]; then
+      echo "PROJECT.md: present"
+    else
+      echo "PROJECT.md: missing"
+    fi
+    status_one "AGENTS.md" "CODEX"
+    status_one "AGENTS.md" "PI"
+    status_one "AGENTS.md" "DSH"
+    status_one "CLAUDE.md" "CLAUDE"
+    exit 0
+    ;;
+  --remove)
+    remove_one "AGENTS.md" "CODEX"
+    remove_one "AGENTS.md" "PI"
+    remove_one "AGENTS.md" "DSH"
+    remove_one "CLAUDE.md" "CLAUDE"
+    echo "Removed managed project adapter blocks. .ai/PROJECT.md was preserved."
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    echo "Unknown option: $1"
+    usage
+    exit 2
+    ;;
+esac
+
+mkdir -p "$PROJECT_ROOT/.ai"
+
+if [ ! -f "$PROJECT_ROOT/.ai/PROJECT.md" ]; then
+  cp "$RUNTIME_HOME/templates/PROJECT.md" "$PROJECT_ROOT/.ai/PROJECT.md"
+  echo "Created: $PROJECT_ROOT/.ai/PROJECT.md"
+else
+  echo "Kept existing: $PROJECT_ROOT/.ai/PROJECT.md"
+fi
+
+merge_one "codex" "AGENTS.md" "CODEX"
+merge_one "pi-agent" "AGENTS.md" "PI"
+merge_one "deepseek-harness" "AGENTS.md" "DSH"
+merge_one "claude-code" "CLAUDE.md" "CLAUDE"
+
+echo
+echo "AI project context initialized:"
+echo "  $PROJECT_ROOT"
+echo
+echo "Existing AGENTS.md / CLAUDE.md content was preserved."
+echo
+echo "For an existing project, next ask any coding agent:"
+echo '請掃描目前 repository，依實際程式碼、README、設定檔與架構，完整填寫 .ai/PROJECT.md；不要修改其他程式碼。'

@@ -1,0 +1,8 @@
+# omx runtime state (not part of this project)
+.omx/
+
+# ai-init backup copies written on every managed-block merge
+*.ai-runtime-backup-*
+
+# OMC runtime state (not part of this project)
+.omc/
