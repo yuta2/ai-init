@@ -15,9 +15,14 @@ set -euo pipefail
 # that merely shows what a managed block looks like must not have its example
 # deleted, and must not be locked out of merging either.
 _AWK_PRELUDE='
+  function strip_cr(s) { sub(/\r$/, "", s); return s }
+  # At most three leading spaces are dropped, matching Markdown: four spaces or a
+  # tab start an indented code block, so a marker there is an example and must
+  # not be treated as a real one. Fence tracking is given the un-deindented line
+  # so its own three-space limit still applies.
   function norm(s) {
-    sub(/\r$/, "", s)
-    sub(/^[ \t]+/, "", s)
+    s = strip_cr(s)
+    sub(/^ {0,3}/, "", s)
     return s
   }
   # Fence delimiters per CommonMark: ``` or ~~~, at most three spaces of indent.
@@ -31,6 +36,8 @@ _AWK_PRELUDE='
     while (substr(s, n + 1, 1) == c) n++
     rest = substr(s, n + 1)
     gsub(/[ \t]+$/, "", rest)
+    # A backtick fence may not carry a backtick in its info string.
+    if (c == "`" && index(rest, "`") > 0) return ""
     return c "\t" n "\t" rest
   }
   # Returns 1 when the line is a fence delimiter and updates the fence state.
@@ -53,8 +60,8 @@ _AWK_PRELUDE='
 # Print "<begin_count> <end_count>", counting only markers outside a code fence.
 _scan_markers() {
   LC_ALL=C awk -v b="$2" -v e="$3" "$_AWK_PRELUDE"'
-    { line = norm($0) }
-    track_fence(line) { next }
+    { raw = strip_cr($0); line = norm($0) }
+    track_fence(raw) { next }
     in_fence { next }
     line == b { bc++ }
     line == e { ec++ }
@@ -64,9 +71,10 @@ _scan_markers() {
 
 # Print "absent", "ok", or "malformed" for a managed block in a file.
 block_state_in() {
-  target="$1"
-  begin_marker="$2"
-  end_marker="$3"
+  local target="$1"
+  local begin_marker="$2"
+  local end_marker="$3"
+  local counts bc ec
 
   if [ ! -f "$target" ]; then
     echo "absent"
@@ -87,6 +95,7 @@ block_state_in() {
 }
 
 _explain_malformed() {
+  local counts bc ec
   counts="$(_scan_markers "$1" "$2" "$3")"
   bc="${counts%% *}"
   ec="${counts##* }"
@@ -105,7 +114,7 @@ _strip_block() {
   LC_ALL=C awk -v b="$2" -v e="$3" "$_AWK_PRELUDE"'
     {
       line = norm($0)
-      if (track_fence(line) || in_fence) { keep(); next }
+      if (track_fence(strip_cr($0)) || in_fence) { keep(); next }
       if (line == b) { skip = 1; next }
       if (line == e) { skip = 0; next }
       if (!skip) keep()
@@ -123,8 +132,9 @@ _strip_block() {
 # write that fails partway (ENOSPC, RLIMIT_FSIZE) leaves the user with an empty
 # config file. Build a sibling temp file, then rename it into place.
 _write_file() {
-  source_file="$1"
-  dest="$2"
+  local source_file="$1"
+  local dest="$2"
+  local hops link dest_dir tmp
 
   # Replace what a symlink points at rather than the link itself.
   hops=0
@@ -138,10 +148,11 @@ _write_file() {
   done
 
   dest_dir="$(dirname "$dest")"
-  tmp="$dest_dir/.ai-runtime-write.$$"
-  rm -f "$tmp"
+  tmp="$(mktemp "$dest_dir/.ai-runtime-write.XXXXXX")" || return 1
 
   # cp -p carries the existing mode across, so the rename does not reset it.
+  # Note: the rename gives the file a new inode, so any hard link to the old one
+  # stops tracking it. That is the price of never truncating on a partial write.
   if [ -f "$dest" ]; then
     if ! cp -p "$dest" "$tmp" 2>/dev/null; then
       rm -f "$tmp"
@@ -163,10 +174,11 @@ _write_file() {
 }
 
 merge_managed_block() {
-  target="$1"
-  begin_marker="$2"
-  end_marker="$3"
-  block_file="$4"
+  local target="$1"
+  local begin_marker="$2"
+  local end_marker="$3"
+  local block_file="$4"
+  local state out body ok
 
   if [ ! -s "$block_file" ]; then
     echo "ERROR: Adapter block is missing or empty: $block_file"
@@ -220,9 +232,10 @@ merge_managed_block() {
 }
 
 remove_managed_block() {
-  target="$1"
-  begin_marker="$2"
-  end_marker="$3"
+  local target="$1"
+  local begin_marker="$2"
+  local end_marker="$3"
+  local state out body
 
   [ -f "$target" ] || return 0
 
@@ -262,15 +275,15 @@ remove_managed_block() {
 # Print the ai-runtime-version declared inside a managed block, or nothing when
 # the block or the version line is absent.
 block_version_in() {
-  target="$1"
-  begin_marker="$2"
-  end_marker="$3"
+  local target="$1"
+  local begin_marker="$2"
+  local end_marker="$3"
 
   [ -f "$target" ] || return 0
 
   LC_ALL=C awk -v b="$begin_marker" -v e="$end_marker" "$_AWK_PRELUDE"'
-    { line = norm($0) }
-    track_fence(line) { next }
+    { raw = strip_cr($0); line = norm($0) }
+    track_fence(raw) { next }
     in_fence { next }
     line == b { inblock = 1; next }
     line == e { exit }

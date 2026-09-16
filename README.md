@@ -81,10 +81,12 @@ ai-init --help
 - 比對是 **byte 精確**的（awk 一律跑在 `LC_ALL=C`）。在 UTF-8 locale 下 awk 的字串比較是
   collation 比對，前面加個 BOM 或全形空白的行會被當成 marker，結果還會隨 locale 改變。
 - 忽略行尾的 CR，所以 CRLF 檔案一樣認得自己的 block，不會重複 merge 出第二個。
-- 忽略行首空白，所以被縮排過的 marker 仍對得上，不會變成看不見的孤兒 block。
+- 忽略行首**最多 3 個空白**，所以稍微縮排過的 marker 仍對得上，不會變成看不見的孤兒 block。
+  4 個空白或 tab 開頭在 Markdown 裡是程式碼區塊，那裡的 marker 視為範例，不會被當真。
 - **fenced code block 裡的 marker 一律忽略**。文件裡示範 managed block 長什麼樣子的
   程式碼區塊不會被刪掉，該檔案也照樣能正常 merge 真正的 block。
-  支援 ``` 與 ~~~、縮排、巢狀，關閉的 fence 必須同字元、不短於開啟的、且不帶 info string。
+  支援 ``` 與 ~~~、最多 3 空白縮排、巢狀；關閉的 fence 必須同字元、不短於開啟的、且不帶
+  info string。反引號 fence 的 info string 不得含反引號。
 
 ## 寫入方式
 
@@ -92,7 +94,7 @@ ai-init --help
 （磁碟滿、`RLIMIT_FSIZE`）不會把設定檔截成空的。既有檔案的權限會保留，symlink 也維持是
 symlink（寫入它指向的檔案）。
 
-代價是 merge 需要目標檔**所在目錄**可寫。目錄唯讀時會明確失敗，不會退回就地覆寫。
+代價有兩個：檔案會換到新的 inode，所以指向舊 inode 的 hard link 不再同步；而且 merge 需要目標檔**所在目錄**可寫。目錄唯讀時會明確失敗，不會退回就地覆寫。
 
 ## 測試
 
@@ -101,6 +103,6 @@ bash test-lib.sh
 ```
 
 `lib.sh` 會寫進 `~/.claude/CLAUDE.md`、`~/.codex/AGENTS.md` 等全域設定檔，
-所以 merge / remove / 版本讀取的行為都有對應檢查（97 項）。
+所以 merge / remove / 版本讀取的行為都有對應檢查（112 項）。
 
 測試本身用「種突變到 `lib.sh`，看有沒有測試變紅」的方式驗過。

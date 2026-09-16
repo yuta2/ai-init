@@ -378,5 +378,112 @@ chmod 755 dir
 teardown
 
 echo
+# --- four spaces or a tab means indented code: a marker there is an example --
+setup
+printf '# M\n\nHere is what one looks like:\n\n    %s\n    EXAMPLE\n    %s\n' "$B" "$E" > target.md
+check "4-space marker: not a real marker" "$(block_state_in target.md "$B" "$E")" "absent"
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+check "4-space marker: example preserved" "$(grep -c '^    EXAMPLE$' target.md)" "1"
+printf '# M\n\n\t%s\n\tTABBED\n\t%s\n' "$B" "$E" > tab.md
+check "tab marker: not a real marker" "$(block_state_in tab.md "$B" "$E")" "absent"
+merge_managed_block tab.md "$B" "$E" block.md >/dev/null
+check "tab marker: example preserved" "$(grep -c 'TABBED' tab.md)" "1"
+teardown
+
+# --- an indented fence opener is code, not a fence ---------------------------
+# Treating it as one opens a fence that never closes, which hides the real
+# markers below it, so every merge appends another block.
+setup
+printf '# M\n\n    ```\n    some code\n\n%s\nold\n%s\n' "$B" "$E" > target.md
+check "indented fence: real block still visible" "$(block_state_in target.md "$B" "$E")" "ok"
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+check "indented fence: no block pile-up" "$(grep -cF "$B" target.md)" "1"
+teardown
+
+# --- up to three spaces still counts as a fence ------------------------------
+setup
+printf '# M\n\n   ```\n%s\nSECRET\n%s\n   ```\n' "$B" "$E" > target.md
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+check "3-space fence: still a fence" "$(grep -c '^SECRET$' target.md)" "1"
+teardown
+
+# --- a backtick fence may not carry a backtick in its info string ------------
+setup
+printf '# M\n\n```foo```\n\n%s\nold\n%s\n' "$B" "$E" > target.md
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+check "backtick info string: not a fence" "$(grep -cF "$B" target.md)" "1"
+teardown
+
+# --- user content keeps its own indentation ---------------------------------
+setup
+printf '# M\n\n- item\n  - nested item\n\ttabbed line\n\n%s\nold\n%s\n' "$B" "$E" > target.md
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+check "indentation: nested list kept" "$(grep -c '^  - nested item$' target.md)" "1"
+check "indentation: tab kept" "$(grep -cP '^\ttabbed line$' target.md 2>/dev/null || grep -c "$(printf '^\ttabbed line$')" target.md)" "1"
+teardown
+
+# --- trailing lines of tabs or CR count as blank and are trimmed ------------
+setup
+printf '# M\n\nkeep this line\n' > plain.md
+printf '# M\n\nkeep this line\n\t\n \t \n\r\n' > messy.md
+merge_managed_block plain.md "$B" "$E" block.md >/dev/null
+merge_managed_block messy.md "$B" "$E" block.md >/dev/null
+check_file "trim: tab and CR blanks trimmed too" messy.md plain.md
+teardown
+
+# --- the replacement is a rename, so the target gets a new inode ------------
+# This is the line that keeps a partial write from truncating the original.
+setup
+printf '# My rules\n' > target.md
+before_inode="$(ls -i target.md | awk '{print $1}')"
+merge_managed_block target.md "$B" "$E" block.md >/dev/null
+after_inode="$(ls -i target.md | awk '{print $1}')"
+check "atomic write: target was replaced by rename" "$([ "$before_inode" != "$after_inode" ] && echo yes || echo no)" "yes"
+teardown
+
+# --- no temp file is left behind when assembly fails ------------------------
+setup
+printf '# My rules\n\nkeep this line\n' > target.md
+{ printf '%s\n' "$B"
+  i=0; while [ "$i" -lt 200 ]; do echo "padding line to push past the size limit"; i=$((i + 1)); done
+  printf '%s\n' "$E"; } > big-block.md
+( ulimit -f 2; merge_managed_block target.md "$B" "$E" big-block.md >/dev/null 2>&1 )
+check "cleanup: no temp file left in the target directory" "$(ls -a | grep -c 'ai-runtime-write' || true)" "0"
+teardown
+
+echo
+# --- a failed merge leaves no temp file behind ------------------------------
+# mktemp on macOS ignores TMPDIR, so point it at a directory we can inspect by
+# putting a stub earlier in PATH.
+setup
+mkdir -p stub tmphome
+cat > stub/mktemp <<'STUB'
+#!/bin/sh
+if [ "$#" -gt 0 ]; then
+  # template form used for the sibling write file: honour it as given
+  d=$(dirname "$1"); b=$(basename "$1")
+  f="$d/${b%XXXXXX}$$.$RANDOM"
+  : > "$f"; echo "$f"; exit 0
+fi
+f="$STUB_TMPDIR/tmp.$$.$RANDOM"
+: > "$f"; echo "$f"; exit 0
+STUB
+chmod +x stub/mktemp
+export STUB_TMPDIR="$PWD/tmphome"
+printf '# My rules\n\nkeep this line\n' > target.md
+{ printf '%s\n' "$B"
+  i=0; while [ "$i" -lt 200 ]; do echo "padding line to push past the size limit"; i=$((i + 1)); done
+  printf '%s\n' "$E"; } > big-block.md
+( export PATH="$PWD/stub:$PATH"; ulimit -f 2
+  merge_managed_block target.md "$B" "$E" big-block.md >/dev/null 2>&1 )
+check "cleanup: assembly temp removed" "$(find tmphome -type f | wc -l | tr -d ' ')" "0"
+check "cleanup: no sibling temp in target dir" "$(ls -a | grep -c 'ai-runtime-write' || true)" "0"
+unset STUB_TMPDIR
+teardown
+
+echo
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]
