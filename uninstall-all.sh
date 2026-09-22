@@ -4,25 +4,24 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/lib.sh"
 
-# home|file|marker
-TARGETS="${CODEX_HOME:-$HOME/.codex}|AGENTS.md|CODEX
-${CLAUDE_CONFIG_DIR:-$HOME/.claude}|CLAUDE.md|CLAUDE
-${PI_AGENT_HOME:-$HOME/.pi/agent}|AGENTS.md|PI
-${DSH_HOME:-$HOME/.dsh}|AGENTS.md|DSH"
-
 FAILURES=""
 
-while IFS='|' read -r home file marker; do
-  if [ -z "$home" ]; then
-    continue
-  fi
-  target="$home/$file"
+# Explicit calls, like install-all.sh: a |-separated table would split a home
+# path that itself contains a |, and silently skip that file.
+remove_adapter() {
+  target="$1/$2"
+  marker="$3"
   if ! remove_managed_block "$target" \
     "<!-- BEGIN AI-ENGINEERING-RUNTIME ADAPTER:$marker -->" \
     "<!-- END AI-ENGINEERING-RUNTIME ADAPTER:$marker -->"; then
     FAILURES="$FAILURES$marker ($target)"$'\n'
   fi
-done <<< "$TARGETS"
+}
+
+remove_adapter "${CODEX_HOME:-$HOME/.codex}" "AGENTS.md" "CODEX"
+remove_adapter "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "CLAUDE.md" "CLAUDE"
+remove_adapter "${PI_AGENT_HOME:-$HOME/.pi/agent}" "AGENTS.md" "PI"
+remove_adapter "${DSH_HOME:-$HOME/.dsh}" "AGENTS.md" "DSH"
 
 if [ -n "$FAILURES" ]; then
   echo
@@ -31,7 +30,7 @@ if [ -n "$FAILURES" ]; then
     if [ -n "$line" ]; then echo "  $line"; fi
   done
   echo
-  echo "Fix the managed block markers in the files above, then re-run."
+  echo "See the errors above (markers or file permissions), fix them, then re-run."
   exit 1
 fi
 

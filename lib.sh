@@ -158,6 +158,10 @@ _write_file() {
       rm -f "$tmp"
       return 1
     fi
+  else
+    # mktemp creates 0600; a brand-new config file should get the umask mode
+    # like any file the user would have created themselves.
+    chmod "$(printf '%o' $((0666 & ~0$(umask))))" "$tmp"
   fi
 
   if ! cat "$source_file" > "$tmp" 2>/dev/null; then
@@ -204,7 +208,13 @@ merge_managed_block() {
     fi
   else
     body="$(mktemp)" || { rm -f "$out"; return 1; }
-    _strip_block "$target" "$begin_marker" "$end_marker" > "$body"
+    # A strip that dies partway would otherwise be written back as the file.
+    if ! _strip_block "$target" "$begin_marker" "$end_marker" > "$body"; then
+      echo "ERROR: Could not read $target"
+      echo "The file was left unchanged."
+      rm -f "$body" "$out"
+      return 1
+    fi
     ok=0
     if [ -s "$body" ]; then
       { cat "$body" && printf '\n\n' && cat "$block_file"; } > "$out" 2>/dev/null && ok=1
@@ -253,7 +263,12 @@ remove_managed_block() {
   out="$(mktemp)" || return 1
   body="$(mktemp)" || { rm -f "$out"; return 1; }
 
-  _strip_block "$target" "$begin_marker" "$end_marker" > "$body"
+  if ! _strip_block "$target" "$begin_marker" "$end_marker" > "$body"; then
+    echo "ERROR: Could not read $target"
+    echo "The file was left unchanged."
+    rm -f "$body" "$out"
+    return 1
+  fi
   if [ -s "$body" ]; then
     { cat "$body"; printf '\n'; } > "$out"
   else

@@ -170,7 +170,7 @@ report_failures() {
     if [ -n "$line" ]; then echo "  $line"; fi
   done
   echo
-  echo "Fix the managed block markers in the files above, then re-run."
+  echo "See the errors above (markers or file permissions), fix them, then re-run."
   exit 1
 }
 

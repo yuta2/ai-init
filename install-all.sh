@@ -91,7 +91,7 @@ if [ -n "$FAILURES" ]; then
     if [ -n "$line" ]; then echo "  $line"; fi
   done
   echo
-  echo "Fix the managed block markers in the files above, then re-run install-all.sh."
+  echo "See the errors above (markers or file permissions), fix them, then re-run install-all.sh."
   echo "The shared rules and the ai-init command were installed, so the rest still works."
   exit 1
 fi

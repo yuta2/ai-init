@@ -484,6 +484,38 @@ check "cleanup: no sibling temp in target dir" "$(ls -a | grep -c 'ai-runtime-wr
 unset STUB_TMPDIR
 teardown
 
+# --- a failing strip must not be mistaken for an empty file ------------------
+# _strip_block feeds the assembly step. If awk dies partway (OOM, a kill, a
+# broken awk), the partial output must not be written back as the whole file.
+# The awk function below stands in for that: one line of output, then failure.
+setup
+printf 'line1\nline2\nline3\n\n%s\nold\n%s\n' "$B" "$E" > target.md
+cp target.md target.before
+( awk() { command awk "$@" | head -1; return 1; }
+  merge_managed_block target.md "$B" "$E" block.md >/dev/null 2>&1 )
+check "strip failure: merge reports failure" "$?" "1"
+check_file "strip failure: target untouched by merge" target.md target.before
+( awk() { command awk "$@" | head -1; return 1; }
+  remove_managed_block target.md "$B" "$E" >/dev/null 2>&1 )
+check "strip failure: remove reports failure" "$?" "1"
+check_file "strip failure: target untouched by remove" target.md target.before
+teardown
+
+# --- a newly created target gets the umask mode, not mktemp's 0600 -----------
+setup
+( umask 022; merge_managed_block target.md "$B" "$E" block.md >/dev/null )
+check "new file mode honours umask" "$(perl -e 'printf "%o", (stat shift)[2] & 0777' target.md)" "644"
+teardown
+
+# --- uninstall-all.sh: a home path containing | is not split on it -----------
+setup
+mkdir -p 'a|b' none
+printf '<!-- BEGIN AI-ENGINEERING-RUNTIME ADAPTER:CODEX -->\nx\n<!-- END AI-ENGINEERING-RUNTIME ADAPTER:CODEX -->\n' > 'a|b/AGENTS.md'
+CODEX_HOME="$WORK/a|b" CLAUDE_CONFIG_DIR="$WORK/none" PI_AGENT_HOME="$WORK/none" DSH_HOME="$WORK/none" \
+  bash "$ROOT/uninstall-all.sh" >/dev/null 2>&1
+check "uninstall: | in path still removes the block" "$(grep -c 'BEGIN' 'a|b/AGENTS.md')" "0"
+teardown
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]
